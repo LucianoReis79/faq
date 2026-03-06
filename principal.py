@@ -6,104 +6,97 @@ from sklearn.metrics.pairwise import cosine_similarity
 import os
 
 # 1. Configuração da Página
-st.set_page_config(layout="wide", page_title="Central de Ajuda Inteligente", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="FAQ Inteligente")
 
-# --- FUNÇÕES DE CARREGAMENTO (CACHE) ---
-
+# --- CACHE DE DADOS E MODELO ---
 @st.cache_resource
 def carregar_modelo():
-    """Carrega o modelo de embeddings uma única vez na memória."""
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 @st.cache_data
 def carregar_dados():
-    """Carrega e valida o arquivo Excel."""
-    caminho = "faq.xlsx"
-    if not os.path.exists(caminho):
-        st.error(f"Erro: O arquivo '{caminho}' não foi encontrado.")
-        st.stop()
-    
-    df = pd.read_excel(caminho)
-    colunas_obrigatorias = ['categoria', 'pergunta', 'resposta']
-    
-    # Validação de colunas [4]
-    if not all(col in df.columns for col in colunas_obrigatorias):
-        st.error(f"O Excel deve conter as colunas: {colunas_obrigatorias}")
-        st.stop()
-        
+    df = pd.read_excel("faq.xlsx")
+    df.columns = df.columns.str.strip()
     return df.dropna(subset=['pergunta', 'resposta'])
 
 @st.cache_data
-def gerar_base_embeddings(_modelo, perguntas):
-    """Gera e armazena os embeddings de todas as perguntas cadastras."""
+def gerar_embeddings(_modelo, perguntas):
     return _modelo.encode(perguntas.tolist())
 
-# --- LÓGICA DE BUSCA HÍBRIDA ---
-
+# --- LÓGICA DE BUSCA ---
 def busca_hibrida(query, df, modelo, embeddings_base):
-    # A. Busca Semântica (Peso 0.7)
     query_embedding = modelo.encode([query])
+    # .flatten() corrige o erro de dimensão [ValueError: Length of values (1) does not match...]
     similaridades = cosine_similarity(query_embedding, embeddings_base).flatten()
-
     
-    # B. Busca por Palavra-chave (Peso 0.3)
-    # Verifica presença do termo na pergunta ou resposta (case insensitive)
     keyword_score = df.apply(
         lambda x: 1.0 if query.lower() in str(x['pergunta']).lower() or 
-                         query.lower() in str(x['resposta']).lower() else 0.0, 
-        axis=1
+                         query.lower() in str(x['resposta']).lower() else 0.0, axis=1
     ).values
     
-    # C. Ranking Final
     df['score'] = (similaridades * 0.7) + (keyword_score * 0.3)
     return df.sort_values(by='score', ascending=False).head(5)
 
-# --- INTERFACE DO USUÁRIO ---
-
+# --- INTERFACE ---
 def main():
     st.title("🔍 Central de Ajuda")
-    st.markdown("Busque por dúvidas ou navegue pelas categorias abaixo.")
-
-    # Inicialização [2, 5]
+    
     modelo = carregar_modelo()
     df = carregar_dados()
-    embeddings_base = gerar_base_embeddings(modelo, df['pergunta'])
+    embeddings_base = gerar_embeddings(modelo, df['pergunta'])
 
-    # Barra de Pesquisa
-    query = st.text_input("", placeholder="Digite sua dúvida aqui (ex: Como recuperar senha?)...")
+    # 2. Categorias na Barra Lateral [1]
+    st.sidebar.header("Categorias")
+    categorias = ["Todas"] + sorted(df['categoria'].unique().tolist())
+    categoria_sel = st.sidebar.radio("Navegue por assunto:", categorias)
 
+    # 3. Campo de Busca com Botão Limpar
+    col_busca, col_limpar = st.columns([2, 3])
+    
+    with col_busca:
+        # Usamos session_state para permitir limpar o texto
+        if 'input_busca' not in st.session_state:
+            st.session_state.input_busca = ""
+            
+        query = st.text_input("Como podemos ajudar?", value=st.session_state.input_busca, key="campo_busca")
+
+    with col_limpar:
+        st.write(" ") # Alinhamento visual
+        if st.button("🗑️ Limpar Busca"):
+            st.session_state.input_busca = ""
+            st.rerun()
+
+    # 4. Processamento de Resultados
     if query:
-        # Modo busca
         resultados = busca_hibrida(query, df, modelo, embeddings_base)
-        
-        # Filtro de relevância mínima
-        resultados = resultados[resultados['score'] > 0.3]
-        
-        st.subheader(f"Resultados encontrados: {len(resultados)}")
+        # Filtro de relevância ajustado para 0.45 conforme conversado
+        resultados = resultados[resultados['score'] > 0.45]
         
         if not resultados.empty:
+            st.subheader(f"Encontramos {len(resultados)} resultados relevantes:")
             for _, row in resultados.iterrows():
-                with st.expander(f"📌 {row['pergunta']}", expanded=True):
-                    st.write(row['resposta'])
-                    st.caption(f"Relevância: {row['score']:.2%}")
+                exibir_faq(row['pergunta'], row['resposta'], expandido=True)
         else:
-            st.warning("Nenhum resultado relevante encontrado. Tente outras palavras.")
+            st.warning("Nenhum resultado encontrado. Tente outras palavras-chave.")
             
     else:
-        # Modo Navegação por Categorias [6]
-        categorias = df['categoria'].unique()
-        tabs = st.tabs(list(categorias))
+        # Exibição por Categoria (quando não há busca ativa)
+        df_exibicao = df if categoria_sel == "Todas" else df[df['categoria'] == categoria_sel]
+        st.subheader(f"Assunto: {categoria_sel}")
         
-        for i, cat in enumerate(categorias):
-            with tabs[i]:
-                df_cat = df[df['categoria'] == cat]
-                for _, row in df_cat.iterrows():
-                    with st.expander(row['pergunta']):
-                        st.write(row['resposta'])
+        for _, row in df_exibicao.iterrows():
+            exibir_faq(row['pergunta'], row['resposta'])
 
-    # Rodapé [7]
-    st.sidebar.markdown("---")
-    st.sidebar.caption("⭐ Central de Ajuda Inteligente\nPreparada para evolução em RAG/LLM")
+# --- FORMATAÇÃO DE TEXTO (Markdown + HTML) ---
+def exibir_faq(pergunta, resposta, expandido=False):
+    """Aplica formatação: Perguntas negrito, Respostas negrito/itálico, +25% tamanho."""
+    # font-size: 1.25rem aumenta a fonte em exatamente 25% [4]
+    estilo_p = "font-size: 1.25rem; font-weight: bold;"
+    estilo_r = "font-size: 1.25rem; font-weight: bold; font-style: italic;"
+    
+    with st.expander(pergunta, expanded=expandido):
+        st.markdown(f"<p style='{estilo_p}'>{pergunta}</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='{estilo_r}'>{resposta}</p>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
