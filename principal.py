@@ -43,7 +43,8 @@ def gerar_base_embeddings(_modelo, perguntas):
 def busca_hibrida(query, df, modelo, embeddings_base):
     # A. Busca Semântica (Peso 0.7)
     query_embedding = modelo.encode([query])
-    similaridades = cosine_similarity(query_embedding, embeddings_base)
+    similaridades = cosine_similarity(query_embedding, embeddings_base).flatten()
+
     
     # B. Busca por Palavra-chave (Peso 0.3)
     # Verifica presença do termo na pergunta ou resposta (case insensitive)
